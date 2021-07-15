@@ -1,7 +1,8 @@
 package netty;
 
-import filter.HeaderHttpRequestFilter;
+import filter.HeaderHttpResponseFilter;
 import filter.HttpRequestFilter;
+import filter.HttpResponseFilter;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.ChannelFutureListener;
 import io.netty.channel.ChannelHandlerContext;
@@ -10,15 +11,18 @@ import io.netty.handler.codec.http.FullHttpRequest;
 import io.netty.handler.codec.http.FullHttpResponse;
 import io.netty.handler.codec.http.HttpUtil;
 import org.apache.http.HttpResponse;
+import org.apache.http.client.methods.CloseableHttpResponse;
 import org.apache.http.client.methods.HttpGet;
-import org.apache.http.concurrent.FutureCallback;
 import org.apache.http.impl.client.CloseableHttpClient;
 import org.apache.http.impl.client.HttpClients;
 import org.apache.http.protocol.HTTP;
 import org.apache.http.util.EntityUtils;
+import router.HttpEndpointRouter;
+import router.RandomHttpEndpointRouter;
 
 import java.util.List;
 import java.util.concurrent.ExecutorService;
+import java.util.stream.Collectors;
 
 import static io.netty.handler.codec.http.HttpResponseStatus.NO_CONTENT;
 import static io.netty.handler.codec.http.HttpResponseStatus.OK;
@@ -26,16 +30,15 @@ import static io.netty.handler.codec.http.HttpVersion.HTTP_1_1;
 
 public class OutBoundHandler {
 
-    private HttpRequestFilter filter = new HeaderHttpRequestFilter();
+    HttpResponseFilter filter = new HeaderHttpResponseFilter();
+    HttpEndpointRouter router = new RandomHttpEndpointRouter();
 
     private CloseableHttpClient httpclient;
     private ExecutorService proxyService;
     private List<String> backendUrls;
 
     public OutBoundHandler(List<String> backends) {
-
-        // this.backendUrls = backends.stream().map(this::formatUrl).collect(Collectors.toList());
-
+        this.backendUrls = backends.stream().map(this::formatUrl).collect(Collectors.toList());
         httpclient = HttpClients.createDefault();
     }
 
@@ -64,43 +67,22 @@ public class OutBoundHandler {
         }
     }*/
 
-    public void handle(final FullHttpRequest fullRequest, final ChannelHandlerContext ctx, HttpRequestFilter filter) {
+    private String formatUrl(String url) {
+        return url.endsWith("/") ? url.substring(0, url.length() - 1) : url;
+    }
+
+    public void handle(final FullHttpRequest fullRequest, final ChannelHandlerContext ctx, HttpRequestFilter filter) throws Exception {
         String backendUrl = router.route(this.backendUrls);
         final String url = backendUrl + fullRequest.uri();
         filter.filter(fullRequest, ctx);
-        //proxyService.submit(() -> fetchGet(fullRequest, ctx, url));
-        fetchGet(fullRequest, ctx, url);
-    }
-
-    private void fetchGet(final FullHttpRequest inbound, final ChannelHandlerContext ctx, final String url) {
         final HttpGet httpGet = new HttpGet(url);
         //httpGet.setHeader(HTTP.CONN_DIRECTIVE, HTTP.CONN_CLOSE);
         httpGet.setHeader(HTTP.CONN_DIRECTIVE, HTTP.CONN_KEEP_ALIVE);
-        httpGet.setHeader("mao", inbound.headers().get("mao"));
-
-        httpclient.execute(httpGet, new FutureCallback<HttpResponse>() {
-            @Override
-            public void completed(final HttpResponse endpointResponse) {
-                try {
-                    handleResponse(inbound, ctx, endpointResponse);
-                } catch (Exception e) {
-                    e.printStackTrace();
-                } finally {
-
-                }
-            }
-
-            @Override
-            public void failed(final Exception ex) {
-                httpGet.abort();
-                ex.printStackTrace();
-            }
-
-            @Override
-            public void cancelled() {
-                httpGet.abort();
-            }
-        });
+        httpGet.setHeader("mao", fullRequest.headers().get("mao"));
+        CloseableHttpResponse response1 = null;
+        response1 = httpclient.execute(httpGet);
+        handleResponse(fullRequest, ctx, response1);
+        //proxyService.submit(() -> fetchGet(fullRequest, ctx, url));
     }
 
     private void handleResponse(final FullHttpRequest fullRequest, final ChannelHandlerContext ctx, final HttpResponse endpointResponse) throws Exception {
@@ -133,7 +115,6 @@ public class OutBoundHandler {
 
     }
 
-    @Override
     public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
         cause.printStackTrace();
         ctx.close();
